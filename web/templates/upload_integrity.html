@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload</title>
+    <style>
+        /* 전체 화면 중앙 배치 */
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f4f9;
+            font-family: Arial, sans-serif;
+        }
+
+        /* 업로드 박스 스타일 */
+        .upload-box {
+            width: 60%; /* Increased width */
+            max-width: 600px; /* Increased max width */
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .upload-box h1 {
+            font-size: 24px;
+            color: #333333;
+            margin-bottom: 20px;
+        }
+
+        .upload-box input[type="file"],
+        .upload-box input[type="text"],
+        .upload-box input[type="password"] {
+            width: 90%; /* Increased input width */
+            padding: 10px; /* Added padding for better usability */
+            font-size: 16px; /* Increased font size */
+            margin-bottom: 20px;
+        }
+
+        /* 업로드 버튼 */
+        .upload-box button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .upload-box button:hover {
+            background-color: #0056b3;
+        }
+
+        /* 플래시 메시지 스타일 */
+        .flash-messages {
+            margin-bottom: 20px;
+            color: red;
+            font-weight: bold;
+            list-style-type: none; /* 글머리 기호 제거 */
+            padding: 0; /* 기본 패딩 제거 */
+        }
+    </style>
+</head>
+<body>
+    <div class="upload-box">
+        <h1>Upload Your Files</h1>
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    <div>
+                        {% for message in messages %}
+                            <p>{{ message }}</p> <!-- <li> 대신 <p> 사용 -->
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+        </div>
+        <form id="upload-form" enctype="multipart/form-data" action="/upload" method="POST">
+            <label for="file-input-1">파일 1 (업로드할 파일):</label>
+            <input type="file" id="file-input-1" name="file1" required>
+            <br>
+            <label for="file-input-2">파일 2 (인증 파일):</label>
+            <input type="file" id="file-input-2" name="file2" required>
+            <br>
+            <input type="text" id="username" name="username" placeholder="MQTT Username" required>
+            <br>
+            <input type="password" id="password" name="password" placeholder="MQTT Password" autocomplete="off" required>
+            <br>
+            <button type="submit">Upload</button>
+        </form>
+    </div>
+</body>
+</html>
