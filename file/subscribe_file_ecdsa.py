@@ -17,11 +17,13 @@ userPw = "1234"
 brokerIp = '192.168.1.170'
 port = 1883
 
-temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+base_dir = os.path.dirname(os.path.abspath(__file__))
+temp_dir = os.path.join(base_dir, "temp")
 os.makedirs(temp_dir, exist_ok=True)
 
-# ECDSA 공개키 파일 경로 (필요에 따라 수정 가능)
-PUBLIC_KEY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ecdsa_public.pem")
+# ../certs/ecdsa_public.pem 자동 사용
+certs_dir = os.path.abspath(os.path.join(base_dir, os.pardir, 'certs/ecdsa'))
+PUBLIC_KEY_PATH = os.path.join(certs_dir, "ecdsa_public.pem")
 
 file_name = None
 file_data = None

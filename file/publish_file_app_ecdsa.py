@@ -11,7 +11,13 @@ file_topic = "updates/file"
 signature_topic = "updates/signature"  # ECDSA 서명 전송용 토픽
 broker_ip = "192.168.1.170"
 
-publish_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'upload')
+# 현재 파일 기준 경로들 설정
+base_dir = os.path.dirname(os.path.abspath(__file__))
+publish_dir = os.path.join(base_dir, 'upload')
+
+# ../certs/ecdsa_private.pem 자동 사용
+certs_dir = os.path.abspath(os.path.join(base_dir, os.pardir, 'certs/ecdsa'))
+DEFAULT_PRIVKEY_PATH = os.path.join(certs_dir, 'ecdsa_private.pem')
 
 
 # =========================
@@ -110,7 +116,7 @@ def send_file_to_broker(broker_ip, username, password,
 
     # ECDSA 개인키 로드
     private_key = load_ecdsa_private_key(privkey_path, privkey_password)
-    print("ECDSA private key loaded.")
+    print(f"ECDSA private key loaded from: {privkey_path}")
 
     client = mqtt.Client()
     client.on_connect = on_connect
@@ -172,10 +178,11 @@ if __name__ == '__main__':
     username = input("Please write your username: ")
     password = input("please write your password: ")
 
-    privkey_path = input("ECDSA private key path (e.g., ./ecdsa_private.pem): ")
-    privkey_password = input("Private key password (if none, just Enter): ").strip()
-    if privkey_password == "":
-        privkey_password = None
+    # 사용자 입력 없이 ../certs/ecdsa_private.pem 자동 사용
+    privkey_path = DEFAULT_PRIVKEY_PATH
+    privkey_password = None
+
+    print(f"Using ECDSA private key: {privkey_path}")
 
     send_file_to_broker(
         broker_ip,
