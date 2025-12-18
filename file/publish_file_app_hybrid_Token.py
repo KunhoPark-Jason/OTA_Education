@@ -387,8 +387,8 @@ def send_file_to_broker(broker_ip, username, password,
 
 if __name__ == "__main__":
     print("=" * 80)
-    username = input("Please write your username: ")
-    password = input("please write your password: ")
+    username = "admin"
+    password = "1234"
 
     privkey_path = DEFAULT_PRIVKEY_PATH
     privkey_password = None
