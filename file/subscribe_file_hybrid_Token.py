@@ -172,6 +172,33 @@ def verify_ecdsa_signature(public_key, data: bytes, signature: bytes) -> bool:
     except Exception as e:
         print("[ERROR] ECDSA verify exception:", e)
         return False
+    
+def is_vg_expired(vg_bytes: bytes) -> bool:
+    """
+    Version Graph의 valid_until 시간이 현재 UTC 시간을 초과했는지 검사
+    """
+    try:
+        vg = json.loads(vg_bytes.decode("utf-8"))
+        valid_until_str = vg.get("valid_until")
+        if not valid_until_str:
+            print("[FAIL] VG missing valid_until")
+            return True
+
+        valid_until = datetime.strptime(
+            valid_until_str, "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc)
+
+        now_utc = datetime.now(timezone.utc)
+
+        if now_utc > valid_until:
+            print(f"[EXPIRED] VG expired at {valid_until}, now={now_utc}")
+            return True
+
+        return False
+
+    except Exception as e:
+        print("[ERROR] VG validity check failed:", e)
+        return True
 
 # =========================
 # VG_verify
@@ -192,6 +219,10 @@ def verify_vg():
 
     if not pqc_verify(vg_data, vg_sig_pqc):
         print("[FAIL] VG PQC verify")
+        return False
+    
+    if is_vg_expired(vg_data):
+        print("[ABORT] OTA aborted: Version Graph expired")
         return False
 
     vg_verified = True

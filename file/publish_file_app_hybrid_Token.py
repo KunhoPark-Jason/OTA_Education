@@ -223,6 +223,7 @@ def build_version_graph(validity_seconds: int):
 
         "valid_from": valid_from,
         "valid_until": valid_until
+        #"valid_until": "2025-12-19T04:32:53Z"
     }
 
     return json.dumps(vg, sort_keys=True).encode("utf-8")
