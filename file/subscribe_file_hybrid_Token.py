@@ -173,6 +173,73 @@ def verify_ecdsa_signature(public_key, data: bytes, signature: bytes) -> bool:
         print("[ERROR] ECDSA verify exception:", e)
         return False
     
+
+def version_leq(v1: str, v2: str) -> bool:
+    return tuple(map(int, v1.split("."))) <= tuple(map(int, v2.split(".")))
+
+def check_denied_transitions(vg: dict, current_versions: dict):
+    for rule in vg.get("denied_transitions", []):
+        ecu = rule["ecu"]
+        if ecu not in current_versions:
+            continue
+
+        if (current_versions[ecu]["from"] == rule["from"] and
+            current_versions[ecu]["to"] == rule["to"]):
+            raise RuntimeError(
+                f"[DENIED] {ecu} transition {rule['from']} → {rule['to']} "
+                f"blocked: {rule.get('reason')}"
+            )
+
+def check_cross_dependencies(vg: dict, current_versions: dict):
+    for dep in vg.get("cross_dependencies", []):
+        ecu_set = dep["ecu_set"]   
+        required_versions = dep["versions"]
+        reason = dep.get("reason", "unspecified")
+
+        matched = True
+        actual_versions = {}
+
+        for ecu in ecu_set:
+            if ecu not in current_versions:
+                matched = False
+                break
+
+            actual_versions[ecu] = current_versions[ecu]["to"]
+
+            if current_versions[ecu]["to"] != required_versions.get(ecu):
+                matched = False
+                break
+
+        if matched:
+            print("[CROSS_DEP] Detected forbidden ECU version combination")
+            print(f"  - Reason            : {reason}")
+            print(f"  - ECU set           : {ecu_set}")
+            print(f"  - Forbidden versions: {required_versions}")
+            print(f"  - Actual OTA versions: {actual_versions}")
+
+            raise RuntimeError(
+                "[CROSS_DEP] OTA aborted due to invalid cross-ECU dependency"
+            )
+
+
+
+def check_rollback_policies(vg: dict, current_versions: dict):
+    for rule in vg.get("rollback_policies", []):
+        ecu = rule["ecu"]
+        min_v = rule["min_version"]
+
+        if ecu not in current_versions:
+            continue
+
+        target_v = current_versions[ecu]["to"]
+        if not version_leq(min_v, target_v):
+            raise RuntimeError(
+                f"[ROLLBACK] {ecu} target {target_v} < min_version {min_v}"
+            )
+
+
+
+    
 def is_vg_expired(vg_bytes: bytes) -> bool:
     """
     Version Graph의 valid_until 시간이 현재 UTC 시간을 초과했는지 검사
@@ -313,6 +380,7 @@ def save_file_if_complete():
         return
 
     save_path = os.path.join(temp_dir, file_name)
+
     try:
         with open(save_path, "wb") as f:
             f.write(file_data)
@@ -322,6 +390,7 @@ def save_file_if_complete():
         return
 
     ok_ecdsa = verify_ecdsa_signature(public_key, file_data, file_signature_ecdsa)
+
     try:
         ok_pqc = pqc_verify(file_data, file_signature_pqc)
     except Exception as e:
@@ -329,9 +398,32 @@ def save_file_if_complete():
         ok_pqc = False
 
     if verify_vg() and ok_ecdsa and ok_pqc:
-        print("[SUCCESS] Hybrid verification passed (ECDSA + PQC).")
-        print("[SUCCESS] OTA verified")
-        generate_tokens()   
+        try:
+            vg = json.loads(vg_data.decode("utf-8"))
+
+            current_versions = {
+                entry["ecu"]: {
+                    "from": entry["from"],
+                    "to": entry["to"]
+                }
+                for entry in vg["allowed_transitions"]
+            }
+
+            # === 정책 검증 ===
+            check_denied_transitions(vg, current_versions)
+            check_rollback_policies(vg, current_versions)
+            check_cross_dependencies(vg, current_versions)
+
+            # === 여기까지 왔을 때만 성공 ===
+            print("[SUCCESS] Hybrid verification passed (ECDSA + PQC).")
+            print("[SUCCESS] OTA verified")
+
+            generate_tokens()
+
+        except RuntimeError as e:
+            print(f"[POLICY BLOCKED] OTA aborted: {e}")
+            os.remove(save_path)
+            return   
     else:
         print("[FAIL] Hybrid verification failed.")
         print(f"  - ECDSA: {'OK' if ok_ecdsa else 'NG'}")

@@ -166,13 +166,13 @@ def build_version_graph(validity_seconds: int):
         "allowed_transitions": [
             {
                 "ecu": "A12",
-                "from": "2.1",
+                "from": "2.0",
                 "to": "3.0",
                 "ECU_Type": "P"
             },
             {
                 "ecu": "B03",
-                "from": "1.0",
+                "from": "1.1",
                 "to": "2.0",
                 "ECU_Type": "H"
             },
@@ -206,7 +206,6 @@ def build_version_graph(validity_seconds: int):
                     "A12": "3.0",
                     "B03": "1.0"
                 },
-                "valid": False,
                 "reason": "incompatible braking logic"
             }
         ],
