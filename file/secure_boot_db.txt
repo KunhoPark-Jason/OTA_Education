@@ -1,0 +1,4 @@
+# Cloud Secure Boot DB
+ecu_id : A12, secure_boot_serial : 0000000000000000
+ecu_id : B03, secure_boot_serial : 1111111111111111
+ecu_id : C04, secure_boot_serial : 2222222222222222

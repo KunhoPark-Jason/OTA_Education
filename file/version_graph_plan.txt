@@ -1,0 +1,24 @@
+{
+  "vg_id": "VG-PLAN-2025-001",
+  "version": 3,
+  "campaign_id": "CAMP2025-03",
+  "allowed_transitions": [
+    { "ecu": "A12", "from": "2.1", "to": "3.0", "ECU_Type": "P" },
+    { "ecu": "B03", "from": "1.0", "to": "2.0", "ECU_Type": "H" },
+    { "ecu": "C04", "from": "2.0", "to": "2.1", "ECU_Type": "C" }
+  ],
+  "denied_transitions": [
+    { "ecu": "B03", "from": "1.0", "to": "3.0", "reason": "safety_violation" }
+  ],
+  "cross_dependencies": [
+    {
+      "ecu_set": ["A12", "B03"],
+      "versions": { "A12": "3.0", "B03": "1.0" },
+      "valid": false,
+      "reason": "incompatible braking logic"
+    }
+  ],
+  "rollback_policies": [
+    { "ecu": "A12", "min_version": "2.1" }
+  ]
+}
