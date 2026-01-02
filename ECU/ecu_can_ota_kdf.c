@@ -89,7 +89,8 @@ static int can_read(int s, struct can_frame *out) {
 // START 프레임을 이미 main loop에서 "읽은 상태"에서,
 // 같은 can_id에 대해 다음 프레임부터 END까지 payload(8B씩)를 모아 반환.
 static int recv_stream_after_start(int s, uint16_t can_id, uint8_t **out, size_t *out_len) {
-    *out = NULL; *out_len = 0;
+    *out = NULL;
+    *out_len = 0;
 
     uint8_t *buf = NULL;
     size_t cap = 0, len = 0;
@@ -98,26 +99,36 @@ static int recv_stream_after_start(int s, uint16_t can_id, uint8_t **out, size_t
         struct can_frame f;
         if (can_read(s, &f) != 0) continue;
 
+        // ID 필터
         if ((f.can_id & 0x7FF) != can_id) continue;
-        if (f.can_dlc != 8) continue;
 
-        if (is_mark(f.data, END_MARK)) {
+        // ✅ END_MARK는 "dlc==8" 일 때만 검사 (dlc<8이면 비교 자체가 의미 없음)
+        if (f.can_dlc == 8 && memcmp(f.data, END_MARK, 8) == 0) {
             *out = buf;
             *out_len = len;
             return 0;
         }
 
-        if (len + 8 > cap) {
+        // payload는 dlc만큼만 취함
+        size_t take = (size_t)f.can_dlc;
+        if (take == 0) continue;
+
+        // 버퍼 확장
+        if (len + take > cap) {
             size_t ncap = (cap == 0) ? 256 : cap * 2;
-            while (ncap < len + 8) ncap *= 2;
+            while (ncap < len + take) ncap *= 2;
+
             uint8_t *nb = (uint8_t*)realloc(buf, ncap);
-            if (!nb) { free(buf); return -1; }
+            if (!nb) {
+                free(buf);
+                return -1;
+            }
             buf = nb;
             cap = ncap;
         }
 
-        memcpy(buf + len, f.data, 8);
-        len += 8;
+        memcpy(buf + len, f.data, take);
+        len += take;
     }
 }
 
