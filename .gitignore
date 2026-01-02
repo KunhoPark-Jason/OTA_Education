@@ -17,3 +17,4 @@ certs
 # ===============================================
 file/temp
 file/upload
+file/master_key.bin
