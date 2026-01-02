@@ -51,7 +51,6 @@ DEFAULT_PRIVKEY_PATH = os.path.join(certs_ecdsa_dir, "ecdsa_private.pem")
 
 # PQC 키 경로: /home/sea/OTA/OTA_Education/certs/pqc
 certs_pqc_dir = os.path.join(certs_root_dir, "pqc")
-os.makedirs(certs_pqc_dir, exist_ok=True)
 PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private.key")
 PQC_PUBKEY_PATH = os.path.join(certs_pqc_dir, "pqc_public.key")
 
@@ -71,16 +70,34 @@ PQC_MAX_SIG_LEN = 4096
 _pqc = None  # ctypes.CDLL 핸들
 
 
+def _require_pqc_key_files_exist():
+    """PQC 키 파일이 없으면 종료(자동 생성 방지)."""
+    missing = []
+    for p in (PQC_PRIVKEY_PATH, PQC_PUBKEY_PATH):
+        if not os.path.isfile(p) or os.path.getsize(p) <= 0:
+            missing.append(p)
+    if missing:
+        msg = "\n".join([
+            "[FATAL] PQC key file(s) missing or empty:",
+            *[f"  - {m}" for m in missing],
+            "[HINT] 키 파일을 먼저 배치한 뒤 다시 실행하세요. (이 코드는 키 자동 생성을 하지 않습니다.)",
+        ])
+        raise SystemExit(msg)
+
+
 def init_pqc():
     """
     libpqc_sig.so 를 로드하고,
     pqc_init(alg_name, privkey_path, pubkey_path)를 호출한다.
-    이때 키 파일이 없으면 .so 안에서 자동으로 생성한다.
+    이때 키 파일이 없으면 자동 생성하지 않고 즉시 종료한다.
     """
     global _pqc
 
     if _pqc is not None:
         return
+
+    # ✅ 핵심: .so를 로드하기 전에 키 파일 존재/크기 체크 → 없으면 즉시 종료
+    _require_pqc_key_files_exist()
 
     lib = ctypes.CDLL(PQC_LIB_NAME)
 
@@ -110,6 +127,7 @@ def init_pqc():
     print(f"[INFO] PQC(Falcon) library loaded: {PQC_LIB_NAME}")
     print(f"[INFO] PQC private key : {PQC_PRIVKEY_PATH}")
     print(f"[INFO] PQC public  key : {PQC_PUBKEY_PATH}")
+
 
 
 def pqc_sign(data: bytes) -> bytes:
