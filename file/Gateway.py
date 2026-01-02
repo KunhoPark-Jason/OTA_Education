@@ -68,7 +68,6 @@ PUBLIC_KEY_PATH = os.path.join(certs_ecdsa_dir, "ecdsa_public.pem")
 
 # PQC 키 경로: /home/sea/OTA/OTA_Education/certs/pqc
 certs_pqc_dir = os.path.join(certs_root_dir, "pqc")
-PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private.key")  # 필요시 사용
 PQC_PUBKEY_PATH = os.path.join(certs_pqc_dir, "pqc_public.key")
 
 # 수신 상태 저장 변수
@@ -87,69 +86,68 @@ public_key = None  # ECDSA 공개키
 # PQC(Falcon-512)용 ctypes 래퍼
 # =========================
 
-PQC_LIB_NAME = "libpqc_sig.so"
+wrapper_dir = os.path.abspath(os.path.join(base_dir, os.pardir, "wrapper"))
+PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig.so")
 PQC_ALG_NAME = b"Falcon-1024"
 PQC_MAX_SIG_LEN = 4096
 
 _pqc = None  # ctypes.CDLL 핸들
 
 
-def _require_pqc_key_files_exist():
-    """PQC 키 파일이 없으면 종료(자동 생성 방지)."""
-    missing = []
-    for p in (PQC_PRIVKEY_PATH, PQC_PUBKEY_PATH):
-        if not os.path.isfile(p) or os.path.getsize(p) <= 0:
-            missing.append(p)
-    if missing:
-        msg = "\n".join([
-            "[FATAL] PQC key file(s) missing or empty:",
-            *[f"  - {m}" for m in missing],
-            "[HINT] 키 파일을 먼저 배치한 뒤 다시 실행하세요. (이 코드는 키 자동 생성을 하지 않습니다.)",
-        ])
-        raise SystemExit(msg)
+def _require_pqc_pubkey_file_exist():
+    p = PQC_PUBKEY_PATH
+    if (not os.path.isfile(p)) or os.path.getsize(p) <= 0:
+        raise SystemExit(
+            "\n".join([
+                "[FATAL] PQC public key file missing or empty:",
+                f"  - {p}",
+                "[HINT] Gateway는 PQC 키를 생성하지 않습니다. 공개키 파일을 먼저 배치하세요.",
+            ])
+        )
 
 
 def init_pqc():
     """
-    libpqc_sig.so 를 로드하고,
-    pqc_init(alg_name, privkey_path, pubkey_path)를 호출한다.
-    이때 키 파일이 없으면 자동 생성하지 않고 즉시 종료한다.
+    Gateway(검증 전용):
+    - libpqc_sig.so 를 로드하고,
+    - pqc_init_verify(alg_name, pubkey_path)로 "공개키만" 로드합니다.
+    - 공개키가 없으면 즉시 종료합니다(키 자동 생성 방지).
     """
     global _pqc
 
     if _pqc is not None:
         return
 
-    # ✅ 핵심: .so 로드 전에 키 파일 체크 → 없으면 종료
-    _require_pqc_key_files_exist()
+    # ✅ .so 로드 전에 공개키 파일 체크 → 없으면 즉시 종료
+    _require_pqc_pubkey_file_exist()
 
     lib = ctypes.CDLL(PQC_LIB_NAME)
 
-    lib.pqc_init.argtypes = [c_char_p, c_char_p, c_char_p]
-    lib.pqc_init.restype = c_int
+    # 검증 전용 초기화 함수 (wrapper.c에 추가된 함수)
+    lib.pqc_init_verify.argtypes = [c_char_p, c_char_p]
+    lib.pqc_init_verify.restype = c_int
 
-    lib.pqc_sign.argtypes = [
+    # pqc_verify 프로토타입도 명시(안전)
+    lib.pqc_verify.argtypes = [
         POINTER(c_uint8), c_size_t,
-        POINTER(c_uint8), POINTER(c_size_t)
+        POINTER(c_uint8), c_size_t
     ]
-    lib.pqc_sign.restype = c_int
+    lib.pqc_verify.restype = c_int
 
     if hasattr(lib, "pqc_cleanup"):
         lib.pqc_cleanup.argtypes = []
         lib.pqc_cleanup.restype = None
 
     alg = PQC_ALG_NAME
-    priv_path = PQC_PRIVKEY_PATH.encode("utf-8")
     pub_path = PQC_PUBKEY_PATH.encode("utf-8")
 
-    rc = lib.pqc_init(alg, priv_path, pub_path)
+    rc = lib.pqc_init_verify(alg, pub_path)
     if rc != 0:
-        raise RuntimeError(f"pqc_init failed with code {rc}")
+        raise RuntimeError(f"pqc_init_verify failed with code {rc}")
 
     _pqc = lib
     print(f"[INFO] PQC(Falcon) library loaded: {PQC_LIB_NAME}")
-    print(f"[INFO] PQC private key : {PQC_PRIVKEY_PATH}")
-    print(f"[INFO] PQC public  key : {PQC_PUBKEY_PATH}")
+    print(f"[INFO] PQC public key : {PQC_PUBKEY_PATH}")
 
 
 def pqc_verify(data: bytes, sig: bytes) -> bool:
