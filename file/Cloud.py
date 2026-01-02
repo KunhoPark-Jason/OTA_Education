@@ -63,7 +63,9 @@ VERSION_GRAPH_PLAN_PATH = os.path.join(base_dir, "version_graph_plan.txt")
 # =========================
 
 # libpqc_sig.so 는 /usr/local/lib 에 설치되어 있다고 가정
-PQC_LIB_NAME = "libpqc_sig.so"
+base_dir = os.path.dirname(os.path.abspath(__file__))      # .../OTA_Education/file
+wrapper_dir = os.path.abspath(os.path.join(base_dir, "..", "wrapper"))  # .../OTA_Education/wrapper
+PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig_sign.so")
 PQC_ALG_NAME = b"Falcon-1024"
 PQC_MAX_SIG_LEN = 4096
 

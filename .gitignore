@@ -17,4 +17,3 @@ certs
 # ===============================================
 file/temp
 file/upload
-wrapper/libpqc_sig.so

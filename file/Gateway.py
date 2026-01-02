@@ -86,8 +86,9 @@ public_key = None  # ECDSA 공개키
 # PQC(Falcon-512)용 ctypes 래퍼
 # =========================
 
-wrapper_dir = os.path.abspath(os.path.join(base_dir, os.pardir, "wrapper"))
-PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig.so")
+base_dir = os.path.dirname(os.path.abspath(__file__))      # .../OTA_Education/file
+wrapper_dir = os.path.abspath(os.path.join(base_dir, "..", "wrapper"))  # .../OTA_Education/wrapper
+PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig_verify.so")
 PQC_ALG_NAME = b"Falcon-1024"
 PQC_MAX_SIG_LEN = 4096
 
@@ -109,7 +110,7 @@ def _require_pqc_pubkey_file_exist():
 def init_pqc():
     """
     Gateway(검증 전용):
-    - libpqc_sig.so 를 로드하고,
+    - libpqc_sig_verify.so 를 로드하고,
     - pqc_init_verify(alg_name, pubkey_path)로 "공개키만" 로드합니다.
     - 공개키가 없으면 즉시 종료합니다(키 자동 생성 방지).
     """

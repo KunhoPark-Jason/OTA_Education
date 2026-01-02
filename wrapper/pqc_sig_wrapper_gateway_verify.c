@@ -3,7 +3,7 @@
 // 빌드 후: libpqc_sig.so 로 만들어서 Python에서 ctypes로 사용
 
 //gcc -O2 -fPIC -shared -DGATEWAY_VERIFY_ONLY=1 \
-  -o libpqc_sig.so pqc_sig_wrapper_gateway_verify.c \
+  -o libpqc_sig_verify.so pqc_sig_wrapper_gateway_verify.c \
   -I/usr/local/include \
   -L/usr/local/lib -loqs \
   -lcrypto -lssl \
