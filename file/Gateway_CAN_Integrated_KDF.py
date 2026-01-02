@@ -19,7 +19,10 @@ from typing import Optional
 
 # [ADDED] for attestation relay + CAN
 import threading
-import uuid
+import time
+import errno
+import can
+
 
 # [ADDED] optional python-can
 try:
@@ -448,23 +451,44 @@ def _chunk8(payload: bytes):
             c = c + b'\x00' * (8 - len(c))
         yield c
 
-def _can_send8(bus, can_id: int, data8: bytes):
-    msg = can.Message(arbitration_id=int(can_id), data=data8[:8], is_extended_id=False)
-    bus.send(msg)
+def _can_send8(bus, can_id: int, data: bytes, retry: int = 200, backoff_sec: float = 0.002):
+    """
+    ENOBUFS(105) 발생 시 backoff 하며 재시도.
+    data는 길이 0~8 bytes 모두 허용 (dlc는 len(data)로 자동 설정됨)
+    """
+    msg = can.Message(arbitration_id=int(can_id), data=data[:8], is_extended_id=False)
 
-def _can_send_stream(bus, can_id: int, payload: bytes):
-    # START(8B)
-    bus.send(can.Message(arbitration_id=can_id, is_extended_id=False, data=CAN_START_MARK))
+    for _ in range(retry):
+        try:
+            bus.send(msg, timeout=0.2)
+            return
+        except can.CanError as e:
+            emsg = str(e).lower()
+            if ("no buffer space available" in emsg) or ("error code 105" in emsg) or ("105" in emsg):
+                time.sleep(backoff_sec)
+                continue
+            raise
+        except OSError as e:
+            if getattr(e, "errno", None) == errno.ENOBUFS:
+                time.sleep(backoff_sec)
+                continue
+            raise
 
-    i = 0
-    while i < len(payload):
-        chunk = payload[i:i+8]
-        # 여기서 data를 "chunk 길이 그대로" 넣으면 python-can이 dlc를 그 길이로 잡습니다.
-        bus.send(can.Message(arbitration_id=can_id, is_extended_id=False, data=chunk))
-        i += len(chunk)
+    raise RuntimeError(f"CAN TX still blocked (ENOBUFS). can_id=0x{int(can_id):X}")
 
-    # END(8B)
-    bus.send(can.Message(arbitration_id=can_id, is_extended_id=False, data=CAN_END_MARK))
+def _chunk8(b: bytes):
+    for i in range(0, len(b), 8):
+        yield b[i:i+8]   # ✅ 패딩 금지
+
+def _can_send_stream(bus, can_id: int, payload: bytes, inter_frame_sleep: float = 0.002):
+    _can_send8(bus, can_id, CAN_START_MARK)  # START/END는 8바이트여야 함
+
+    for c in _chunk8(payload):
+        _can_send8(bus, can_id, c)
+        if inter_frame_sleep:
+            time.sleep(inter_frame_sleep)
+
+    _can_send8(bus, can_id, CAN_END_MARK)
 
 def _can_recv_next(bus, timeout: float = 0.05):
     return bus.recv(timeout=timeout)
@@ -613,7 +637,7 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                     continue
 
                 # 4) OTA payload
-                _can_send_stream(bus, ids['ota'], file_data)
+                _can_send_stream(bus, ids['ota'], file_data, inter_frame_sleep=0.02)
 
                 # ECU가 OTA 저장/해시검증 후 ACK(0xAC, 0x02)
                 ok2 = _can_wait_ack(bus, ids['ack'], expect_stage=0x02, timeout_sec=10.0)
