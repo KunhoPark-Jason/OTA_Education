@@ -444,13 +444,6 @@ def _can_ids_for_ecu(ecu_id: str):
         'ack':      0x730 + addr,
     }
 
-def _chunk8(payload: bytes):
-    for i in range(0, len(payload), 8):
-        c = payload[i:i+8]
-        if len(c) < 8:
-            c = c + b'\x00' * (8 - len(c))
-        yield c
-
 def _can_send8(bus, can_id: int, data: bytes, retry: int = 200, backoff_sec: float = 0.002):
     """
     ENOBUFS(105) 발생 시 backoff 하며 재시도.
@@ -616,14 +609,20 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                 # 2) META (nonce16 포함)
                 nonce16 = pack["nonce"]
                 token_bytes = pack["token"]
+                send_name = file_name
+                relpath = f"{ecu_id}/{send_name}"
 
                 # META = nonce16(16) + pq_len(4, big-endian) + pq_bytes + vg_hash(32) + ota_hash(32)
+                fn_b = relpath.encode("utf-8")
+
                 meta_payload = (
                     nonce16
                     + struct.pack('>I', len(pq_bytes))
                     + pq_bytes
                     + vg_hash
                     + ota_hash
+                    + struct.pack('>H', len(fn_b))   # ✅ filename 길이 (be16)
+                    + fn_b                           # ✅ filename bytes
                 )
                 _can_send_stream(bus, ids['meta'], meta_payload)
 

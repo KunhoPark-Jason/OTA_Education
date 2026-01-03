@@ -21,6 +21,8 @@
 
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+
 #include <net/if.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
@@ -228,10 +230,97 @@ static uint32_t read_be32(const uint8_t *p) {
     return ((uint32_t)p[0]<<24) | ((uint32_t)p[1]<<16) | ((uint32_t)p[2]<<8) | (uint32_t)p[3];
 }
 
+static uint16_t read_be16(const uint8_t *p) {
+    return (uint16_t)((p[0] << 8) | p[1]);
+}
+
+// filename을 안전하게 정리: 절대경로/.. 차단 + 허용문자 제한
+// 하위폴더( a/b/c.bin )는 허용, 하지만 ".."는 금지
+static void sanitize_relpath(const char *in, char *out, size_t out_sz) {
+    if (!in || !out || out_sz == 0) return;
+
+    // 절대경로 차단
+    if (in[0] == '/') {
+        snprintf(out, out_sz, "receive.bin");
+        return;
+    }
+
+    size_t j = 0;
+    for (size_t i = 0; in[i] && j + 1 < out_sz; i++) {
+        char c = in[i];
+
+        // 윈도우 경로/드라이브 문자 차단
+        if (c == '\\' || c == ':') { out[j++] = '_'; continue; }
+
+        // 허용: 영문/숫자/._-/ 그리고 '/'(하위폴더)
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '.' || c == '_' || c == '-' || c == '/') {
+            out[j++] = c;
+        } else {
+            out[j++] = '_';
+        }
+    }
+    out[j] = '\0';
+
+    // '..' traversal 차단
+    if (strstr(out, "..") != NULL) {
+        snprintf(out, out_sz, "receive.bin");
+        return;
+    }
+
+    // 빈 값이면 기본값
+    if (out[0] == '\0') {
+        snprintf(out, out_sz, "receive.bin");
+        return;
+    }
+
+    // '.'로 시작하면 위험 소지 → 치환
+    if (out[0] == '.') out[0] = '_';
+}
+
+// a/b/c 처럼 디렉토리 재귀 생성
+static void mkdirs_for_file_path(const char *file_path) {
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s", file_path);
+
+    // 마지막 '/' 이전까지만 디렉토리로 생성
+    char *last = strrchr(tmp, '/');
+    if (!last) return;
+    *last = '\0';
+
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(tmp, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(tmp, 0755);
+}
+
+static void join_path(char *out, size_t out_sz, const char *base_dir, const char *relpath) {
+    if (!base_dir || !relpath) {
+        snprintf(out, out_sz, "./update_files/receive.bin");
+        return;
+    }
+    size_t bl = strlen(base_dir);
+    if (bl == 0) {
+        snprintf(out, out_sz, "%s", relpath);
+        return;
+    }
+    if (base_dir[bl-1] == '/')
+        snprintf(out, out_sz, "%s%s", base_dir, relpath);
+    else
+        snprintf(out, out_sz, "%s/%s", base_dir, relpath);
+}
+
+
 int main(int argc, char **argv) {
     if (argc < 7) {
         fprintf(stderr,
-            "usage: %s <can_if> <ECU_ID> <ECU_ADDR_HEX> <serial_txt> <out_bin> <master_key_bin>\n",
+            "usage: %s <can_if> <ECU_ID> <ECU_ADDR_HEX> <serial_txt> <out_path> <master_key_bin>\n",
             argv[0]);
         return 1;
     }
@@ -240,7 +329,7 @@ int main(int argc, char **argv) {
     const char *ECU_ID = argv[2];
     int addr = (int)strtol(argv[3], NULL, 0);
     const char *serial_txt = argv[4];
-    const char *out_bin = argv[5];
+    const char *out_dir = argv[5]; 
     const char *master_key_path = argv[6];
 
     uint16_t ATT_REQ  = 0x600 + addr;
@@ -262,6 +351,7 @@ int main(int argc, char **argv) {
     uint8_t nonce16[16]={0}, ota_hash32[32]={0}, vg_hash32[32]={0};
     int have_meta = 0;
     int token_ok = 0;
+    char recv_relpath[256] = "receive.bin";
 
     while (1) {
         struct can_frame f;
@@ -290,6 +380,9 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            strncpy(recv_relpath, "receive.bin", sizeof(recv_relpath));
+            recv_relpath[sizeof(recv_relpath)-1] = '\0';
+            
             uint8_t *buf = NULL; size_t n = 0;
             if (recv_stream_after_start(s, META_ID, &buf, &n) == 0) {
                 if (n >= 16 + 4 + 32 + 32) {
@@ -306,6 +399,19 @@ int main(int argc, char **argv) {
                         fprintf(stdout, "[ECU %s] META received (pq_len=%u)\n", ECU_ID, pq_len);
                     } else {
                         fprintf(stderr, "[ECU %s] META too short: got=%zu need=%zu\n", ECU_ID, n, need);
+                    }
+                    if (n >= need + 2) {
+                        uint16_t name_len = read_be16(buf + need);
+                        size_t name_off = need + 2;
+                    
+                        if (name_len > 0 && name_len <= 200 && n >= name_off + name_len) {
+                            char name_tmp[256] = {0};
+                            memcpy(name_tmp, buf + name_off, name_len);
+                            name_tmp[name_len] = '\0';
+                    
+                            sanitize_relpath(name_tmp, recv_relpath, sizeof(recv_relpath));
+                            fprintf(stdout, "[ECU %s] META filename=%s\n", ECU_ID, recv_relpath);
+                        }
                     }
                 } else {
                     fprintf(stderr, "[ECU %s] META too short: %zu\n", ECU_ID, n);
@@ -360,9 +466,15 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                FILE *fp = fopen(out_bin, "wb");
+                char out_path[512];
+                join_path(out_path, sizeof(out_path), out_dir, recv_relpath);
+
+                // 하위폴더가 포함된 경우 자동 생성
+                mkdirs_for_file_path(out_path);
+
+                FILE *fp = fopen(out_path, "wb");  // ✅ 같은 이름이면 덮어쓰기
                 if (!fp) {
-                    perror("fopen out_bin");
+                    perror("fopen out_path");
                     free(buf);
                     continue;
                 }
@@ -376,7 +488,7 @@ int main(int argc, char **argv) {
                 if (memcmp(got_hash, ota_hash32, 32) == 0) {
                     uint8_t ack[8] = {0xAC, 0x02,0,0,0,0,0,0}; // ota OK
                     can_send8(s, ACK_ID, ack);
-                    fprintf(stdout, "[ECU %s] OTA OK saved: %s\n", ECU_ID, out_bin);
+                    fprintf(stdout, "[ECU %s] OTA OK saved: %s\n", ECU_ID, out_path);
                 } else {
                     uint8_t ack[8] = {0xAC, 0x03,0,0,0,0,0,0}; // ota hash mismatch
                     can_send8(s, ACK_ID, ack);
