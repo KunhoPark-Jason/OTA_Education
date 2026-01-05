@@ -19,7 +19,10 @@ from typing import Optional
 
 # [ADDED] for attestation relay + CAN
 import threading
-import uuid
+import time
+import errno
+import can
+
 
 # [ADDED] optional python-can
 try:
@@ -31,8 +34,48 @@ except Exception:
 # Gateway internal secret (Token HMAC key)
 # =========================
 
-K_INTERNAL = b"gateway_internal_secret_key"
+# ===============================
+# [KDF/HMAC] Master key -> ECU key -> Token (nonce 포함)
+# ===============================
+# 운영에서는 파일/TPM/HSM 등 안전한 저장소 사용 권장
 
+base_dir = os.path.dirname(os.path.abspath(__file__))      # .../OTA_Education/file
+
+MASTER_KEY_PATH = os.environ.get("OTA_MASTER_KEY_PATH", os.path.join(base_dir, "master_key.bin"))
+
+def _load_master_key() -> bytes:
+    """
+    Load 32-byte master key shared by Gateway and ECUs.
+    - If MASTER_KEY_PATH exists and has >=32 bytes: use first 32 bytes.
+    - Else fallback to an in-code default (프로토타입용).
+    """
+    default = b"DEMO_MASTER_KEY_32BYTES_LONG____"  # 정확히 32B로 맞추세요(프로토타입)
+    try:
+        if os.path.exists(MASTER_KEY_PATH):
+            with open(MASTER_KEY_PATH, "rb") as f:
+                b = f.read()
+            if len(b) >= 32:
+                return b[:32]
+            print(f"[WARN] master_key.bin is too short ({len(b)} bytes). Using default.")
+    except Exception as e:
+        print("[WARN] master key load failed. Using default.", e)
+    return default
+
+def _derive_ecu_key(master_key: bytes, ecu_id: str) -> bytes:
+    """
+    K_ecu = HMAC-SHA256(K_master, b"ECUKEY|" + ECU_ID)
+    """
+    msg = b"ECUKEY|" + ecu_id.encode("utf-8")
+    return hmac.new(master_key, msg, hashlib.sha256).digest()  # 32B
+
+def _make_token(master_key: bytes, ecu_id: str, ota_hash: bytes, vg_hash: bytes, nonce16: bytes) -> bytes:
+    """
+    token = HMAC-SHA256(K_ecu, b"TOKEN|" + ota_hash + vg_hash + nonce16 + ECU_ID)
+    - nonce16: 16바이트 랜덤, META로 ECU에 전달
+    """
+    k_ecu = _derive_ecu_key(master_key, ecu_id)
+    msg = b"TOKEN|" + ota_hash + vg_hash + nonce16 + ecu_id.encode("utf-8")
+    return hmac.new(k_ecu, msg, hashlib.sha256).digest()  # 32B
 # =========================
 # MQTT 및 경로 설정
 # =========================
@@ -87,7 +130,6 @@ public_key = None  # ECDSA 공개키
 # PQC(Falcon-512)용 ctypes 래퍼
 # =========================
 
-base_dir = os.path.dirname(os.path.abspath(__file__))      # .../OTA_Education/file
 wrapper_dir = os.path.abspath(os.path.join(base_dir, "..", "wrapper"))  # .../OTA_Education/wrapper
 PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig_verify.so")
 PQC_ALG_NAME = b"Falcon-1024"
@@ -275,7 +317,9 @@ def generate_tokens():
 
     # ---------- Hash 계산 ----------
     ota_hash = hashlib.sha256(file_data).digest()
-    vg_hash = hashlib.sha256(vg_data).digest()
+    vg_hash  = hashlib.sha256(vg_data).digest()
+
+    master_key = _load_master_key()  # master_key.bin(32B) 로드
 
     # ---------- PQ Verification Result 구성 ----------
     pq_verification_result = {
@@ -295,50 +339,50 @@ def generate_tokens():
 
     print("\n===== TOKEN GENERATED =====")
 
-    tokens_by_ecu = {}  # [CAN-OTA-ADDED] ecu_id -> token_hex
+    # ecu_id -> {"nonce": bytes16, "token": bytes32}
+    tokens_by_ecu = {}
 
-    for entry in vg["allowed_transitions"]:
-        ecu_id = entry["ecu"]
-        capability = entry.get("ECU_Type", "C")
+    for entry in vg.get("allowed_transitions", []):
+        ecu_id = entry.get("ecu")
+        if not ecu_id:
+            continue
 
+        # 기존 VG 필드 호환: "ECU_Type" 또는 "capability"
+        capability = entry.get("ECU_Type", entry.get("capability", "C"))
+
+        # P/H만 토큰 발급(기존 정책 유지)
         if capability not in ("P", "H"):
             print(f"[INFO] ECU {ecu_id} is Class {capability} → No Token issued")
             continue
 
-        token_input = (
-            pq_verification_result_bytes +
-            ecu_id.encode("utf-8") +
-            vg_hash
-        )
+        # [KDF/HMAC] ECU별 nonce 생성 + 토큰 생성(32B raw)
+        nonce16 = os.urandom(16)
+        token32 = _make_token(master_key, ecu_id, ota_hash, vg_hash, nonce16)  # bytes(32)
 
-        token = hmac.new(
-            K_INTERNAL,
-            token_input,
-            hashlib.sha256
-        ).hexdigest()
-
-        print("\nToken generation inputs")
+        print("Token generation inputs (KDF/HMAC)")
         print(f"  ECU_ID          : {ecu_id}")
+        print(f"  NONCE16         : {nonce16.hex()}")
         print(f"  VG_HASH         : {vg_hash.hex()}")
         print(f"  OTA_HASH        : {ota_hash.hex()}")
         print(f"  pq_verification : {pq_verification_result}")
-        print(f"  HMAC_MESSAGE  : "
-              f"{pq_verification_result_bytes.hex()} | "
-              f"{ecu_id.encode('utf-8').hex()} | "
-              f"{vg_hash.hex()}")
+        print(f"ECU {ecu_id} Token: {token32.hex()}")
 
-        print(f"ECU {ecu_id} Token: {token}")
-        tokens_by_ecu[ecu_id] = token  # [CAN-OTA-ADDED] 저장
-
+        tokens_by_ecu[ecu_id] = {"nonce": nonce16, "token": token32}
 
     # [CAN-OTA-ADDED] Token 생성이 끝나면, Gateway↔ECU 구간을 CAN으로 수행하여
     # META + TOKEN + OTA(payload)를 전송합니다.
     try:
-        _deliver_ota_over_can_to_ecus(pq_verification_result_bytes, vg_hash, ota_hash, tokens_by_ecu)
+        _deliver_ota_over_can_to_ecus(
+            pq_verification_result_bytes,
+            vg_hash,
+            ota_hash,
+            tokens_by_ecu
+        )
     except Exception as e:
         print('[ERROR] CAN OTA delivery failed:', e)
 
     print("===========================\n")
+
 
 
 # =========================
@@ -371,7 +415,7 @@ CAN_RX_TIMEOUT_SEC = float(os.environ.get("GW_CAN_RX_TIMEOUT_SEC", "1.0"))
 #      AttReq  : 0x600 + addr
 #      AttResp : 0x650 + addr
 #      META    : 0x700 + addr   (pq_bytes_len + pq_bytes + vg_hash(32) + ota_hash(32))
-#      TOKEN   : 0x710 + addr   (token_hex ASCII 64B)
+#      TOKEN   : 0x710 + addr   (token raw 32B)
 #      OTA     : 0x720 + addr   (raw firmware bytes)
 #      ACK     : 0x730 + addr   (0xAC, stage_code, ...)
 #  - CAN 8바이트 제약: START/END 마커 + 8B 청크 전송
@@ -400,25 +444,43 @@ def _can_ids_for_ecu(ecu_id: str):
         'ack':      0x730 + addr,
     }
 
-def _chunk8(payload: bytes):
-    for i in range(0, len(payload), 8):
-        c = payload[i:i+8]
-        if len(c) < 8:
-            c = c + b'\x00' * (8 - len(c))
-        yield c
+def _can_send8(bus, can_id: int, data: bytes, retry: int = 200, backoff_sec: float = 0.002):
+    """
+    ENOBUFS(105) 발생 시 backoff 하며 재시도.
+    data는 길이 0~8 bytes 모두 허용 (dlc는 len(data)로 자동 설정됨)
+    """
+    msg = can.Message(arbitration_id=int(can_id), data=data[:8], is_extended_id=False)
 
-def _can_send8(bus, can_id: int, data8: bytes):
-    msg = can.Message(arbitration_id=int(can_id), data=data8[:8], is_extended_id=False)
-    bus.send(msg)
+    for _ in range(retry):
+        try:
+            bus.send(msg, timeout=0.2)
+            return
+        except can.CanError as e:
+            emsg = str(e).lower()
+            if ("no buffer space available" in emsg) or ("error code 105" in emsg) or ("105" in emsg):
+                time.sleep(backoff_sec)
+                continue
+            raise
+        except OSError as e:
+            if getattr(e, "errno", None) == errno.ENOBUFS:
+                time.sleep(backoff_sec)
+                continue
+            raise
+
+    raise RuntimeError(f"CAN TX still blocked (ENOBUFS). can_id=0x{int(can_id):X}")
+
+def _chunk8(b: bytes):
+    for i in range(0, len(b), 8):
+        yield b[i:i+8]   # ✅ 패딩 금지
 
 def _can_send_stream(bus, can_id: int, payload: bytes, inter_frame_sleep: float = 0.002):
-    # START
-    _can_send8(bus, can_id, CAN_START_MARK)
+    _can_send8(bus, can_id, CAN_START_MARK)  # START/END는 8바이트여야 함
+
     for c in _chunk8(payload):
         _can_send8(bus, can_id, c)
         if inter_frame_sleep:
             time.sleep(inter_frame_sleep)
-    # END
+
     _can_send8(bus, can_id, CAN_END_MARK)
 
 def _can_recv_next(bus, timeout: float = 0.05):
@@ -486,16 +548,31 @@ def _load_secure_boot_db(path: str) -> dict:
         return {}
     return m
 
-def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: bytes, tokens_by_ecu: dict):
+_can_bus_lock = threading.Lock()
+
+def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: bytes, tokens_by_ecu: dict, file_data: bytes = None):
     """
     Cloud에서 내려온 OTA file_data를 Gateway가 들고 있고,
     Gateway↔ECU 구간을 CAN으로만 수행하여:
       1) Attestation 요청/응답
-      2) META 전송(pq_bytes_len+p q_bytes+vg_hash+ota_hash)
-      3) TOKEN 전송(token_hex ASCII 64B)
+      2) META 전송(nonce16 + pq_len + pq_bytes + vg_hash + ota_hash)
+      3) TOKEN 전송(token 32B raw)
       4) OTA payload 전송(file_data raw)
     를 ECU별로 수행합니다.
+
+    tokens_by_ecu 형식 예:
+      {
+        "A12": {"nonce": b"...16bytes...", "token": b"...32bytes..."},
+        "B03": {"nonce": b"...16bytes...", "token": b"...32bytes..."},
+      }
     """
+
+    # file_data를 인자로 안 넘기면, 전역변수 file_data를 찾음(기존 코드 호환용)
+    if file_data is None:
+        if "file_data" not in globals():
+            raise ValueError("file_data가 없습니다. _deliver_ota_over_can_to_ecus(..., file_data=...)로 넘겨주세요.")
+        file_data = globals()["file_data"]
+
     if can is None:
         print('[WARN] python-can 미설치로 CAN OTA 전송을 수행할 수 없습니다. pip install python-can')
         return
@@ -506,14 +583,13 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
     if not expected_map:
         expected_map = MOCK_SECURE_BOOT_SERIAL_MAP.copy()
 
-    meta_payload = struct.pack('>I', len(pq_bytes)) + pq_bytes + vg_hash + ota_hash
-
     with _can_bus_lock:
         bus = _open_can_bus()
         try:
-            for ecu_id, token_hex in tokens_by_ecu.items():
+            for ecu_id, pack in tokens_by_ecu.items():
                 ids = _can_ids_for_ecu(ecu_id)
                 if ids is None:
+                    print(f'[CAN] ECU 주소 매핑 없음 ecu={ecu_id} -> 제외')
                     continue
 
                 # 1) Attestation
@@ -521,42 +597,60 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                 if serial8 is None:
                     print(f'[CAN] Attestation timeout ecu={ecu_id} -> 제외')
                     continue
+
                 serial_hex = serial8.hex()
                 expect_hex = expected_map.get(ecu_id)
                 if expect_hex is not None and serial_hex.lower() != expect_hex.lower():
                     print(f'[CAN] Attestation mismatch ecu={ecu_id} got={serial_hex} expect={expect_hex} -> 제외')
                     continue
+
                 print(f'[CAN] Attestation OK ecu={ecu_id} serial={serial_hex}')
 
-                # 2) META
+                # 2) META (nonce16 포함)
+                nonce16 = pack["nonce"]
+                token_bytes = pack["token"]
+                send_name = file_name
+                relpath = f"{ecu_id}/{send_name}"
+
+                # META = nonce16(16) + pq_len(4, big-endian) + pq_bytes + vg_hash(32) + ota_hash(32)
+                fn_b = relpath.encode("utf-8")
+
+                meta_payload = (
+                    nonce16
+                    + struct.pack('>I', len(pq_bytes))
+                    + pq_bytes
+                    + vg_hash
+                    + ota_hash
+                    + struct.pack('>H', len(fn_b))   # ✅ filename 길이 (be16)
+                    + fn_b                           # ✅ filename bytes
+                )
                 _can_send_stream(bus, ids['meta'], meta_payload)
 
-                # 3) TOKEN (ASCII 64B)
-                token_bytes = token_hex.encode('utf-8')
+                # 3) TOKEN (32B raw)
                 _can_send_stream(bus, ids['token'], token_bytes)
 
-                # ECU가 token 검증 후 ACK(0xAC,0x01)를 보내도록 규약
+                # ECU가 token 검증 후 ACK(0xAC, 0x01)를 보내도록 규약
                 ok = _can_wait_ack(bus, ids['ack'], expect_stage=0x01, timeout_sec=2.0)
                 if not ok:
                     print(f'[CAN] ECU {ecu_id} token ACK fail -> 제외')
                     continue
 
                 # 4) OTA payload
-                _can_send_stream(bus, ids['ota'], file_data)
+                _can_send_stream(bus, ids['ota'], file_data, inter_frame_sleep=0.02)
 
+                # ECU가 OTA 저장/해시검증 후 ACK(0xAC, 0x02)
                 ok2 = _can_wait_ack(bus, ids['ack'], expect_stage=0x02, timeout_sec=10.0)
                 if not ok2:
                     print(f'[CAN] ECU {ecu_id} OTA ACK fail')
                     continue
 
                 print(f'[CAN] ECU {ecu_id} OTA delivered')
+
         finally:
             try:
                 bus.shutdown()
             except Exception:
                 pass
-
-_can_bus_lock = threading.Lock()
 
 
 def _try_json_loads_maybe_base64(payload_bytes: bytes):
