@@ -442,6 +442,7 @@ def _can_ids_for_ecu(ecu_id: str):
         'token':    0x710 + addr,
         'ota':      0x720 + addr,
         'ack':      0x730 + addr,
+        'sig': 0x740 + addr,
     }
 
 def _can_send8(bus, can_id: int, data: bytes, retry: int = 200, backoff_sec: float = 0.002):
@@ -552,19 +553,10 @@ _can_bus_lock = threading.Lock()
 
 def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: bytes, tokens_by_ecu: dict, file_data: bytes = None):
     """
-    Cloud에서 내려온 OTA file_data를 Gateway가 들고 있고,
-    Gateway↔ECU 구간을 CAN으로만 수행하여:
-      1) Attestation 요청/응답
-      2) META 전송(nonce16 + pq_len + pq_bytes + vg_hash + ota_hash)
-      3) TOKEN 전송(token 32B raw)
-      4) OTA payload 전송(file_data raw)
-    를 ECU별로 수행합니다.
-
-    tokens_by_ecu 형식 예:
-      {
-        "A12": {"nonce": b"...16bytes...", "token": b"...32bytes..."},
-        "B03": {"nonce": b"...16bytes...", "token": b"...32bytes..."},
-      }
+    [ADDED override]
+    기존 _deliver_ota_over_can_to_ecus 기능을 유지하면서,
+      - SIG(0x740+addr)로 ECDSA 서명을 먼저 전송
+      - Class C(토큰 미발급 ECU)도 VG에서 추출해 전송(토큰/토큰ACK 생략)
     """
 
     # file_data를 인자로 안 넘기면, 전역변수 file_data를 찾음(기존 코드 호환용)
@@ -577,20 +569,51 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
         print('[WARN] python-can 미설치로 CAN OTA 전송을 수행할 수 없습니다. pip install python-can')
         return
 
+    # ECDSA signature 전역변수 확인
+    if "file_signature_ecdsa" not in globals() or globals()["file_signature_ecdsa"] is None:
+        print("[WARN] file_signature_ecdsa is missing -> ECU(H/C) ECDSA verify는 실패할 수 있습니다.")
+    sig_bytes = globals().get("file_signature_ecdsa", None)
+
     # secure boot DB 로딩(있으면 사용), 없으면 MOCK 사용
     secure_boot_db_path = os.path.join(base_dir, 'file', 'secure_boot_db.txt')
     expected_map = _load_secure_boot_db(secure_boot_db_path)
     if not expected_map:
         expected_map = MOCK_SECURE_BOOT_SERIAL_MAP.copy()
 
+    # -------------------------------
+    # [ADDED] VG에서 ECU 목록 추출 (Class C 포함)
+    #  - tokens_by_ecu에는 P/H만 들어있음(기존 정책)
+    #  - vg_data(전역)를 파싱해서 allowed_transitions의 ecu를 모아 Class C까지 포함
+    # -------------------------------
+    ecu_set = set()
+    try:
+        vg_obj = None
+        if "vg_data" in globals() and globals()["vg_data"] is not None:
+            vg_obj = _try_json_loads_maybe_base64(globals()["vg_data"])
+        if isinstance(vg_obj, dict):
+            for entry in vg_obj.get("allowed_transitions", []):
+                ecu_id = entry.get("ecu")
+                if ecu_id:
+                    ecu_set.add(ecu_id)
+    except Exception:
+        pass
+
+    # tokens_by_ecu(P/H) + vg에서 나온 ECU(Class C 포함) 합치기
+    for ecu_id in tokens_by_ecu.keys():
+        ecu_set.add(ecu_id)
+
+    ecu_list = sorted(list(ecu_set))
+
     with _can_bus_lock:
         bus = _open_can_bus()
         try:
-            for ecu_id, pack in tokens_by_ecu.items():
+            for ecu_id in ecu_list:
                 ids = _can_ids_for_ecu(ecu_id)
                 if ids is None:
                     print(f'[CAN] ECU 주소 매핑 없음 ecu={ecu_id} -> 제외')
                     continue
+
+                pack = tokens_by_ecu.get(ecu_id)  # P/H면 존재, C면 None
 
                 # 1) Attestation
                 serial8 = _request_attestation_can(bus, ecu_id, timeout_sec=CAN_RX_TIMEOUT_SEC)
@@ -607,12 +630,18 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                 print(f'[CAN] Attestation OK ecu={ecu_id} serial={serial_hex}')
 
                 # 2) META (nonce16 포함)
-                nonce16 = pack["nonce"]
-                token_bytes = pack["token"]
+                #    - P/H: 기존처럼 pack["nonce"] 사용
+                #    - C  : nonce는 임의값(ECU에서 Token 계산에 쓰지 않으므로 의미 없음)
+                if pack is not None:
+                    nonce16 = pack["nonce"]
+                    token_bytes = pack["token"]
+                else:
+                    nonce16 = os.urandom(16)
+                    token_bytes = None
+
                 send_name = file_name
                 relpath = f"{send_name}"
 
-                # META = nonce16(16) + pq_len(4, big-endian) + pq_bytes + vg_hash(32) + ota_hash(32)
                 fn_b = relpath.encode("utf-8")
 
                 meta_payload = (
@@ -621,21 +650,31 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                     + pq_bytes
                     + vg_hash
                     + ota_hash
-                    + struct.pack('>H', len(fn_b))   # ✅ filename 길이 (be16)
-                    + fn_b                           # ✅ filename bytes
+                    + struct.pack('>H', len(fn_b))
+                    + fn_b
                 )
                 _can_send_stream(bus, ids['meta'], meta_payload)
 
-                # 3) TOKEN (32B raw)
-                _can_send_stream(bus, ids['token'], token_bytes)
+                # 3) TOKEN (P/H만)
+                if token_bytes is not None:
+                    _can_send_stream(bus, ids['token'], token_bytes)
 
-                # ECU가 token 검증 후 ACK(0xAC, 0x01)를 보내도록 규약
-                ok = _can_wait_ack(bus, ids['ack'], expect_stage=0x01, timeout_sec=2.0)
-                if not ok:
-                    print(f'[CAN] ECU {ecu_id} token ACK fail -> 제외')
-                    continue
+                    # ECU가 token 검증 후 ACK(0xAC, 0x01)를 보내도록 규약
+                    ok = _can_wait_ack(bus, ids['ack'], expect_stage=0x01, timeout_sec=2.0)
+                    if not ok:
+                        print(f'[CAN] ECU {ecu_id} token ACK fail -> 제외')
+                        continue
+                else:
+                    # Class C: token/ack 생략
+                    print(f'[CAN] ECU {ecu_id} Class C -> skip TOKEN')
 
-                # 4) OTA payload
+                # 4) [ADDED] SIG(ECDSA signature) 먼저 전송
+                if sig_bytes is not None:
+                    _can_send_stream(bus, ids['sig'], sig_bytes)
+                else:
+                    print(f'[CAN] ECU {ecu_id} SIG missing -> ECU(H/C)에서 ECDSA verify 실패 가능')
+
+                # 5) OTA payload
                 _can_send_stream(bus, ids['ota'], file_data, inter_frame_sleep=0.02)
 
                 # ECU가 OTA 저장/해시검증 후 ACK(0xAC, 0x02)
