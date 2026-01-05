@@ -610,7 +610,7 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                 nonce16 = pack["nonce"]
                 token_bytes = pack["token"]
                 send_name = file_name
-                relpath = f"{ecu_id}/{send_name}"
+                relpath = f"{send_name}"
 
                 # META = nonce16(16) + pq_len(4, big-endian) + pq_bytes + vg_hash(32) + ota_hash(32)
                 fn_b = relpath.encode("utf-8")
