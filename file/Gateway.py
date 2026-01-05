@@ -527,28 +527,6 @@ def _request_attestation_can(bus, ecu_id: str, timeout_sec: float = 1.0) -> Opti
         return data[:8]
     return None
 
-def _load_secure_boot_db(path: str) -> dict:
-    """
-    secure_boot_db.txt 예시 포맷(한 줄에 하나):
-      A12:0000000000000000
-      B03:1111111111111111
-    """
-    m = {}
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#') or ':' not in line:
-                    continue
-                ecu, hx = line.split(':', 1)
-                ecu = ecu.strip()
-                hx = hx.strip().lower().replace('0x','')
-                hx = (hx + '0'*16)[:16]
-                m[ecu] = hx
-    except Exception:
-        return {}
-    return m
-
 _can_bus_lock = threading.Lock()
 
 def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: bytes, tokens_by_ecu: dict, file_data: bytes = None):
@@ -573,12 +551,6 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
     if "file_signature_ecdsa" not in globals() or globals()["file_signature_ecdsa"] is None:
         print("[WARN] file_signature_ecdsa is missing -> ECU(H/C) ECDSA verify는 실패할 수 있습니다.")
     sig_bytes = globals().get("file_signature_ecdsa", None)
-
-    # secure boot DB 로딩(있으면 사용), 없으면 MOCK 사용
-    secure_boot_db_path = os.path.join(base_dir, 'file', 'secure_boot_db.txt')
-    expected_map = _load_secure_boot_db(secure_boot_db_path)
-    if not expected_map:
-        expected_map = MOCK_SECURE_BOOT_SERIAL_MAP.copy()
 
     # -------------------------------
     # [ADDED] VG에서 ECU 목록 추출 (Class C 포함)
@@ -622,12 +594,7 @@ def _deliver_ota_over_can_to_ecus(pq_bytes: bytes, vg_hash: bytes, ota_hash: byt
                     continue
 
                 serial_hex = serial8.hex()
-                expect_hex = expected_map.get(ecu_id)
-                if expect_hex is not None and serial_hex.lower() != expect_hex.lower():
-                    print(f'[CAN] Attestation mismatch ecu={ecu_id} got={serial_hex} expect={expect_hex} -> 제외')
-                    continue
-
-                print(f'[CAN] Attestation OK ecu={ecu_id} serial={serial_hex}')
+                print(f'[CAN] Attestation received ecu={ecu_id} serial={serial_hex} (no check on gateway)')
 
                 # 2) META (nonce16 포함)
                 #    - P/H: 기존처럼 pack["nonce"] 사용
@@ -706,7 +673,7 @@ def _try_json_loads_maybe_base64(payload_bytes: bytes):
 def _open_can_bus():
     if can is None:
         raise RuntimeError("python-can is not available. Install with: pip install python-can")
-    return can.interface.Bus(channel=CAN_CHANNEL, bustype=CAN_BUSTYPE)
+    return can.interface.Bus(channel=CAN_CHANNEL, interface=CAN_BUSTYPE)
 
 
 def _ecu_can_params(ecu_id: str):
@@ -775,49 +742,38 @@ def on_attestation_request(client, userdata, msg):
 
     request_id = payload.get("request_id")
     ecu_list = payload.get("ecu_list")
-
     if not request_id or not isinstance(ecu_list, list):
         return
 
     reports = []
 
-    for ecu in ecu_list:
-        ecu_id = str(ecu)
+    # 버스를 ECU마다 열지 말고 1번만 열어서 처리 (성능/안정성)
+    with _can_bus_lock:
+        bus = _open_can_bus()
+        try:
+            for ecu in ecu_list:
+                ecu_id = str(ecu)
 
-    # [MOCK] CAN 대신 하드코딩된 serial 사용
-        serial_hex = MOCK_SECURE_BOOT_SERIAL_MAP.get(ecu_id)
-        if not serial_hex:
-            continue  # 맵에 없으면 report 안 보냄(= Pub에서 no_attestation_report로 제외)
+                # ✅ ECU 프로토콜과 동일한 방식 사용
+                serial_bytes = _request_attestation_can(bus, ecu_id, timeout_sec=CAN_RX_TIMEOUT_SEC)
 
-    # 혹시 모를 포맷 보정: 16 hex(8 bytes)로 맞춤
-        serial_hex = serial_hex.lower().replace("0x", "")
-        serial_hex = (serial_hex + "0"*16)[:16]
+                if serial_bytes is None:
+                    print(f"[GW] attestation timeout ecu={ecu_id}")
+                    continue
 
-        reports.append({
-        "ecu": ecu_id,
-        "secure_boot_serial": serial_hex
-        })
-
-    # can 활성화 시 활성화
-    
-    # for ecu in ecu_list:
-    #     ecu_id = str(ecu)
-    #     try:
-    #         serial_bytes = read_secure_boot_serial_8bytes_over_can(ecu_id)
-    #     except Exception as e:
-    #         serial_bytes = None
-
-    #     if serial_bytes is None:
-    #         continue
-
-    #     serial_hex = serial_bytes.hex()
-    #     reports.append({
-    #         "ecu": ecu_id,
-    #         "secure_boot_serial": serial_hex
-    #     })
+                reports.append({
+                    "ecu": ecu_id,
+                    "secure_boot_serial": serial_bytes.hex()
+                })
+        finally:
+            try:
+                bus.shutdown()
+            except Exception:
+                pass
 
     resp_bytes = _make_attestation_response_payload(str(request_id), reports)
     client.publish(attestation_response_topic, resp_bytes, qos=2)
+
 
 
 # =========================
