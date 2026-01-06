@@ -59,8 +59,8 @@ DEFAULT_PRIVKEY_PATH = os.path.join(certs_ecdsa_dir, "ecdsa_private.pem")
 
 # PQC 키 경로: /home/sea/OTA/OTA_Education/certs/pqc
 certs_pqc_dir = os.path.join(certs_root_dir, "pqc")
-PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private_f1024.key")
-PQC_PUBKEY_PATH = os.path.join(certs_pqc_dir, "pqc_public_f1024.key")
+PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private_d65.key")
+PQC_PUBKEY_PATH = os.path.join(certs_pqc_dir, "pqc_public_d65.key")
 
 # [ADDED] Cloud-managed TXT files
 SECURE_BOOT_DB_PATH = os.path.join(base_dir, "secure_boot_db.txt")
@@ -74,7 +74,7 @@ VERSION_GRAPH_PLAN_PATH = os.path.join(base_dir, "version_graph_plan.txt")
 base_dir = os.path.dirname(os.path.abspath(__file__))      # .../OTA_Education/file
 wrapper_dir = os.path.abspath(os.path.join(base_dir, "..", "wrapper"))  # .../OTA_Education/wrapper
 PQC_LIB_NAME = os.path.join(wrapper_dir, "libpqc_sig_sign.so")
-PQC_ALG_NAME = b"Falcon-1024"
+PQC_ALG_NAME = b"ML-DSA-65"
 PQC_MAX_SIG_LEN = 4096
 
 _pqc = None  # ctypes.CDLL 핸들

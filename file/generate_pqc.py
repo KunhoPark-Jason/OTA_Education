@@ -19,12 +19,12 @@ certs_root_dir = os.path.abspath(os.path.join(base_dir, os.pardir, "certs"))
 certs_pqc_dir = os.path.join(certs_root_dir, "pqc")
 os.makedirs(certs_pqc_dir, exist_ok=True)
 
-PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private.key")
-PQC_PUBKEY_PATH  = os.path.join(certs_pqc_dir, "pqc_public.key")
+PQC_PRIVKEY_PATH = os.path.join(certs_pqc_dir, "pqc_private_d65.key")
+PQC_PUBKEY_PATH  = os.path.join(certs_pqc_dir, "pqc_public_d65.key")
 
 # ======= lib 설정 =======
 PQC_LIB_NAME = "libpqc_sig.so"
-PQC_ALG_NAME = b"Falcon-1024"
+PQC_ALG_NAME = b"ML-DSA-65"
 
 
 def generate_pqc(overwrite: bool = False) -> None:
