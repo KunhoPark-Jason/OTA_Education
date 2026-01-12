@@ -32,6 +32,21 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>  // [ADDED] for ECDSA verify (PEM public key)
 
+#include <time.h>
+
+static inline uint64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static inline void perf_ms(const char *ECU_ID, const char *tag, uint64_t t0_ns) {
+    uint64_t t1 = now_ns();
+    double ms = (double)(t1 - t0_ns) / 1e6;
+    printf("[PERF] ECU %s %s: %.3f ms\n", ECU_ID, tag, ms);
+    fflush(stdout);
+}
+
 static const uint8_t START_MARK[8] = {0xff,0x00,0xff,0x00,0xff,0x00,0xff,0x00};
 static const uint8_t END_MARK[8]   = {0x00,0xff,0x00,0xff,0x00,0xff,0x00,0xff};
 
@@ -443,6 +458,7 @@ int main(int argc, char **argv) {
             if (f.can_dlc != 8 || !is_mark(f.data, START_MARK)) {
                 continue;
             }
+            uint64_t t_meta = now_ns();
 
             uint8_t *buf = NULL; size_t n = 0;
             if (recv_stream_after_start(s, META_ID, &buf, &n) == 0) {
@@ -489,6 +505,8 @@ int main(int argc, char **argv) {
                 }
                 free(buf);
             }
+            perf_ms(ECU_ID, "26.meta_recv_parse", t_meta);
+
             continue;
         }
 
@@ -572,13 +590,16 @@ int main(int argc, char **argv) {
                     // 공개키 파일 경로 (필요시 인자로 확장 가능)
                     const char *pubkey_path = "./ecdsa_public.pem";
 
-                    if (!verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len)) {
+                    uint64_t t_ecdsa = now_ns();
+                    int ok = verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len);
+                    perf_ms(ECU_ID, "33.ecdsa_verify", t_ecdsa);
+                    
+                    if (!ok) {
                         fprintf(stderr, "[ECU %s] ECDSA verify FAIL. drop.\n", ECU_ID);
                         free(buf);
                         continue;
                     }
-
-                    fprintf(stdout, "[ECU %s] ECDSA verify OK\n", ECU_ID);
+                    
                 }
 
 
@@ -587,6 +608,7 @@ int main(int argc, char **argv) {
 
                 // 하위폴더가 포함된 경우 자동 생성
                 mkdirs_for_file_path(out_path);
+                uint64_t t_write = now_ns();
 
                 FILE *fp = fopen(out_path, "wb");  // ✅ 같은 이름이면 덮어쓰기
                 if (!fp) {
@@ -596,10 +618,13 @@ int main(int argc, char **argv) {
                 }
                 fwrite(buf, 1, n, fp);
                 fclose(fp);
+                perf_ms(ECU_ID, "35.file_write", t_write);
 
+                uint64_t t_sha = now_ns();
                 uint8_t got_hash[32];
                 sha256_bytes(buf, n, got_hash);
-                free(buf);
+                int same = (memcmp(got_hash, ota_hash32, 32) == 0);
+                perf_ms(ECU_ID, "34.sha256_compare", t_sha);
 
                 if (memcmp(got_hash, ota_hash32, 32) == 0) {
                     uint8_t ack[8] = {0xAC, 0x02,0,0,0,0,0,0}; // ota OK
