@@ -11,7 +11,7 @@
 //   [0]=0xAC, [1]=stage
 //   stage: 0x01 token OK, 0x00 token FAIL, 0x02 ota OK, 0x03 ota hash mismatch
 //
-// Build: gcc -O2 -o ecu_H ecu_H.c -lcrypto
+// Build: gcc -O2 -o ecu_C ecu_C.c -lcrypto
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,7 +59,7 @@ static const uint8_t END_MARK[8]   = {0x00,0xff,0x00,0xff,0x00,0xff,0x00,0xff};
 typedef enum { ECU_CLASS_P, ECU_CLASS_H, ECU_CLASS_C } ecu_class_t;
 
 static ecu_class_t parse_capability_arg(const char *s) {
-    return ECU_CLASS_H;
+    return ECU_CLASS_C;
 }
 
 
@@ -400,7 +400,7 @@ int main(int argc, char **argv) {
     //   argv[7] = P | H | C
     //   - default: H
     // ===============================
-    const char *cap_str = (argc >= 8) ? argv[7] : "H";
+    const char *cap_str = (argc >= 8) ? argv[7] : "C";
     ecu_class_t ecu_class = parse_capability_arg(cap_str);
     fprintf(stdout, "[ECU %s] capability=%c\n", ECU_ID, cap_str[0]);
 
@@ -458,7 +458,6 @@ int main(int argc, char **argv) {
             if (f.can_dlc != 8 || !is_mark(f.data, START_MARK)) {
                 continue;
             }
-
             uint64_t t_meta = now_ns();
 
             uint8_t *buf = NULL; size_t n = 0;
@@ -520,7 +519,6 @@ int main(int argc, char **argv) {
             uint8_t *buf = NULL; size_t n = 0;
             if (recv_stream_after_start(s, TOKEN_ID, &buf, &n) == 0) {
                 if (have_meta && n >= 32) {
-                    uint64_t t_token = now_ns();
                     uint8_t expect[32];
                     make_token(ecu_key32, ECU_ID, ota_hash32, vg_hash32, nonce16, expect);
 
@@ -535,7 +533,6 @@ int main(int argc, char **argv) {
                         can_send8(s, ACK_ID, ack);
                         fprintf(stdout, "[ECU %s] TOKEN FAIL\n", ECU_ID);
                     }
-                    perf_ms(ECU_ID, "28.token_hmac_compare", t_token);
                 } else {
                     fprintf(stderr, "[ECU %s] TOKEN received but META missing or too short\n", ECU_ID);
                 }
@@ -591,7 +588,7 @@ int main(int argc, char **argv) {
                     }
 
                     // 공개키 파일 경로 (필요시 인자로 확장 가능)
-                    const char *pubkey_path = "./ecdsa_public.pem";
+                    const char *pubkey_path = "./ecdsa384_public.pem";
 
                     uint64_t t_ecdsa = now_ns();
                     int ok = verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len);
@@ -611,7 +608,6 @@ int main(int argc, char **argv) {
 
                 // 하위폴더가 포함된 경우 자동 생성
                 mkdirs_for_file_path(out_path);
-
                 uint64_t t_write = now_ns();
 
                 FILE *fp = fopen(out_path, "wb");  // ✅ 같은 이름이면 덮어쓰기

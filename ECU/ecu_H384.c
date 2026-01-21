@@ -591,7 +591,7 @@ int main(int argc, char **argv) {
                     }
 
                     // 공개키 파일 경로 (필요시 인자로 확장 가능)
-                    const char *pubkey_path = "./ecdsa_public.pem";
+                    const char *pubkey_path = "./ecdsa384_public.pem";
 
                     uint64_t t_ecdsa = now_ns();
                     int ok = verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len);

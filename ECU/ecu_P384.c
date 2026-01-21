@@ -11,7 +11,7 @@
 //   [0]=0xAC, [1]=stage
 //   stage: 0x01 token OK, 0x00 token FAIL, 0x02 ota OK, 0x03 ota hash mismatch
 //
-// Build: gcc -O2 -o ecu_H ecu_H.c -lcrypto
+// Build: gcc -O2 -o ecu_P ecu_P.c -lcrypto
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,7 +59,7 @@ static const uint8_t END_MARK[8]   = {0x00,0xff,0x00,0xff,0x00,0xff,0x00,0xff};
 typedef enum { ECU_CLASS_P, ECU_CLASS_H, ECU_CLASS_C } ecu_class_t;
 
 static ecu_class_t parse_capability_arg(const char *s) {
-    return ECU_CLASS_H;
+    return ECU_CLASS_P;
 }
 
 
@@ -400,7 +400,7 @@ int main(int argc, char **argv) {
     //   argv[7] = P | H | C
     //   - default: H
     // ===============================
-    const char *cap_str = (argc >= 8) ? argv[7] : "H";
+    const char *cap_str = (argc >= 8) ? argv[7] : "P";
     ecu_class_t ecu_class = parse_capability_arg(cap_str);
     fprintf(stdout, "[ECU %s] capability=%c\n", ECU_ID, cap_str[0]);
 
@@ -591,18 +591,15 @@ int main(int argc, char **argv) {
                     }
 
                     // 공개키 파일 경로 (필요시 인자로 확장 가능)
-                    const char *pubkey_path = "./ecdsa_public.pem";
+                    const char *pubkey_path = "./ecdsa384_public.pem";
 
-                    uint64_t t_ecdsa = now_ns();
-                    int ok = verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len);
-                    perf_ms(ECU_ID, "33.ecdsa_verify", t_ecdsa);
-                    
-                    if (!ok) {
+                    if (!verify_ecdsa_pem_sha256(pubkey_path, buf, n, ecdsa_sig, ecdsa_sig_len)) {
                         fprintf(stderr, "[ECU %s] ECDSA verify FAIL. drop.\n", ECU_ID);
                         free(buf);
                         continue;
                     }
-                    
+
+                    fprintf(stdout, "[ECU %s] ECDSA verify OK\n", ECU_ID);
                 }
 
 

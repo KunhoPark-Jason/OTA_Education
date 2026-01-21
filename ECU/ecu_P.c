@@ -11,7 +11,7 @@
 //   [0]=0xAC, [1]=stage
 //   stage: 0x01 token OK, 0x00 token FAIL, 0x02 ota OK, 0x03 ota hash mismatch
 //
-// Build: gcc -O2 -o ecu_can_ota ecu_can_ota.c -lcrypto
+// Build: gcc -O2 -o ecu_P ecu_P.c -lcrypto
 
 #include <stdio.h>
 #include <stdlib.h>
